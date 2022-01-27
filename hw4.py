@@ -86,6 +86,7 @@ def get_similarities(train_data, model_choice):
     if model_choice == 1:
         # create a dictionary that maps the movieId on the training set to a set of users that have rated it
         movie_user_dict = {}
+
         for index, row in train_data.iterrows():
             movie = row['movieId']
             user = row['userId']
@@ -162,9 +163,11 @@ def get_similarities(train_data, model_choice):
 
 if __name__ == '__main__':
 
-    # ask for the user to specify the K value and the percentage of the data to be used for training
-    K = int(input('Please specify the K value: '))
-    # train_data_percentage = float(input('Please specify the percentage of the data to be used for training. It must be below 90%(p.e. 0.8 = 80%): '))
+    # ask for the user to specify the K value and the percentage of the data to be used for training.
+    # If K value is below 1, print an error message and prompt the user to enter a valid value.
+    while(K := int(input('Enter the K value: '))) < 1:
+        print('K value must be greater than 0')
+
     # if the percentage is above 90%, print an error message and prompt the user to enter a new percentage
     while (train_data_percentage := float(
             input(
