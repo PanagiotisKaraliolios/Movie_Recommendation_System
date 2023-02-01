@@ -20,8 +20,8 @@ def read_ratings(filename):
 
     """
     column_names = ['userId', 'movieId', 'rating', 'timestamp']
-    ratings = pd.read_csv(filename, sep=',', names=column_names, encoding='utf-8', quoting=csv.QUOTE_ALL,
-                          skipinitialspace=True)
+    ratings = pd.read_csv(filename, sep=',', names=column_names,
+                          encoding='utf-8', quoting=csv.QUOTE_ALL, skipinitialspace=True)
     ratings = ratings.dropna()
     # drop first row
     ratings = ratings.drop(ratings.index[0])
@@ -57,7 +57,8 @@ def adjusted_cosine_similarity(set1, set2):
     """
     # calculate the adjusted cosine similarity
     numerator = np.dot(set1, set2)
-    denominator = np.sqrt(np.sum(np.square(set1))) * np.sqrt(np.sum(np.square(set2)))
+    denominator = np.sqrt(np.sum(np.square(set1))) * \
+        np.sqrt(np.sum(np.square(set2)))
     if denominator == 0:
         return 0
     adjusted_cosine = numerator / denominator
@@ -73,7 +74,8 @@ def get_similarities(train_data, model_choice):
     :param model_choice:
     :return: movies_similarities, users_similarities
     """
-    train_data_pivot = train_data.pivot(index='userId', columns='movieId', values='rating')
+    train_data_pivot = train_data.pivot(
+        index='userId', columns='movieId', values='rating')
 
     # normalize each user's ratings
     train_data_pivot = train_data_pivot.apply(lambda x: (x - np.nanmean(x)))
@@ -94,6 +96,9 @@ def get_similarities(train_data, model_choice):
                 movie_user_dict[movie].add(user)
             else:
                 movie_user_dict[movie] = {user}
+
+        # print an empty line
+        print()
 
         # for each movie in the movie_to_users dictionary, calculate the jaccard similarity
         # between the movie and all the other movies
@@ -116,6 +121,9 @@ def get_similarities(train_data, model_choice):
 
         for movieId, values in train_data_pivot.iteritems():
             movie_ratings_dict[movieId] = np.array(values)
+
+        # print an empty line
+        print()
 
         # for each movie in the movie_rating_dict, calculate the adjusted cosine similarity between the movie and all the other movies
         for movie in tqdm(movie_ratings_dict, desc='Calculating movie similarities', unit=' movies'):
@@ -142,6 +150,9 @@ def get_similarities(train_data, model_choice):
     for user_id, values in train_data_pivot.iterrows():
         user_rating_dict[user_id] = np.array(values)
 
+    # print an empty line
+    print()
+
     # for each user in the user_rating_dict, calculate the adjusted cosine similarity between the user and all the other users
     for user_id in tqdm(user_rating_dict, desc='Calculating user similarities', unit=' users'):
         user_similarity[user_id] = {}
@@ -151,7 +162,8 @@ def get_similarities(train_data, model_choice):
                 other_user_ratings = user_rating_dict[other_user_id]
 
                 # calculate the adjusted cosine similarity
-                user_similarity[user_id][other_user_id] = adjusted_cosine_similarity(user_ratings, other_user_ratings)
+                user_similarity[user_id][other_user_id] = adjusted_cosine_similarity(
+                    user_ratings, other_user_ratings)
 
     # sort each user similarities in user_similarity dictionary by the values in descending order
     for user_id in user_similarity:
@@ -165,7 +177,7 @@ if __name__ == '__main__':
 
     # ask for the user to specify the K value and the percentage of the data to be used for training.
     # If K value is below 1, print an error message and prompt the user to enter a valid value.
-    while(K := int(input('Enter the K value: '))) < 1:
+    while (K := int(input('Enter the K value: '))) < 1:
         print('K value must be greater than 0')
 
     # if the percentage is above 90%, print an error message and prompt the user to enter a new percentage
@@ -176,9 +188,9 @@ if __name__ == '__main__':
 
     # ask the user to specify which model to use. 1 = S1 with Jaccard similarity, and S2 with adjusted cosine similarity, 2 = Both S1 and S2 with adjusted cosine similarity
     while (model_choice := int(
-            input(
-                'Please specify the model to use. 1 = S1 with Jaccard similarity, and S2 with adjusted cosine similarity, 2 = Both S1 and S2 with adjusted cosine similarity: '))) not in [
-        1, 2]:
+        input(
+            'Please specify the model to use. 1 = S1 with Jaccard similarity, and S2 with adjusted cosine similarity, 2 = Both S1 and S2 with adjusted cosine similarity: '))) not in [
+            1, 2]:
         print('The model choice must be 1 or 2')
 
     # read the ratings
@@ -207,9 +219,13 @@ if __name__ == '__main__':
     train_data = train_data.sample(train_data_count)
 
     # get the similarities dictionaries
-    movie_similarity, user_similarity = get_similarities(train_data, model_choice)
+    movie_similarity, user_similarity = get_similarities(
+        train_data, model_choice)
 
     # Start Phase S1
+
+    # print an empty line
+    print()
 
     # for each entry in the test_data
     for index, row in tqdm(test_data.iterrows(), desc='Phase S1', unit=' entries', total=len(test_data)):
@@ -237,22 +253,26 @@ if __name__ == '__main__':
         similar_movies_ratings = similar_movies_ratings[similar_movies_ratings['similarity'] > 0]
 
         # sort the similar_movies_ratings by the similarity values in descending order and keep the top K similar movies
-        similar_movies_ratings = similar_movies_ratings.sort_values(by='similarity', ascending=False).head(K)
+        similar_movies_ratings = similar_movies_ratings.sort_values(
+            by='similarity', ascending=False).head(K)
 
         # if the similar_movies_ratings is empty, then skip this entry
         if len(similar_movies_ratings) != 0:
 
             # multiply each rating by the similarity value
-            similar_movies_ratings['rating'] = similar_movies_ratings['rating'] * similar_movies_ratings['similarity']
+            similar_movies_ratings['rating'] = similar_movies_ratings['rating'] * \
+                similar_movies_ratings['similarity']
 
             # sum the ratings
             sum_similar_movies_ratings = similar_movies_ratings['rating'].sum()
 
             # sum the similarities
-            sum_similar_movies_ratings_similarity = similar_movies_ratings['similarity'].sum()
+            sum_similar_movies_ratings_similarity = similar_movies_ratings['similarity'].sum(
+            )
 
             # calculate the predicted rating
-            predicted_rating = sum_similar_movies_ratings / sum_similar_movies_ratings_similarity
+            predicted_rating = sum_similar_movies_ratings / \
+                sum_similar_movies_ratings_similarity
 
             # if the predicted rating is less than 2.5, remove the entry from the test_data
             if predicted_rating < 2.5:
@@ -267,6 +287,9 @@ if __name__ == '__main__':
 
     # create a dataframe to store the predicted ratings
     predicted_ratings = pd.DataFrame(columns=['userId', 'movieId', 'rating'])
+
+    # print an empty line
+    print()
 
     # for each entry in the test_data
     for index, row in tqdm(test_data.iterrows(), desc='Phase S2', unit=' entries', total=len(test_data)):
@@ -290,31 +313,42 @@ if __name__ == '__main__':
         similar_users_ratings = similar_users_ratings[similar_users_ratings['similarity'] > 0]
 
         # sort the similar_users_ratings by the similarity values in descending order and keep the top K similar users
-        similar_users_ratings = similar_users_ratings.sort_values(by='similarity', ascending=False).head(K)
+        similar_users_ratings = similar_users_ratings.sort_values(
+            by='similarity', ascending=False).head(K)
 
         # if the similar_users_ratings is empty, then skip this entry
         if len(similar_users_ratings) != 0:
 
             # multiply each rating by the similarity value
-            similar_users_ratings['rating'] = similar_users_ratings['rating'] * similar_users_ratings['similarity']
+            similar_users_ratings['rating'] = similar_users_ratings['rating'] * \
+                similar_users_ratings['similarity']
 
             # sum the ratings
             sum_similar_users_ratings = similar_users_ratings['rating'].sum()
 
             # sum the similarities
-            sum_similar_users_ratings_similarity = similar_users_ratings['similarity'].sum()
+            sum_similar_users_ratings_similarity = similar_users_ratings['similarity'].sum(
+            )
 
             # calculate the predicted rating
-            predicted_rating = sum_similar_users_ratings / sum_similar_users_ratings_similarity
+            predicted_rating = sum_similar_users_ratings / \
+                sum_similar_users_ratings_similarity
 
-            # update the predicted_ratings dataframe
-            predicted_ratings = predicted_ratings.append(
-                {'userId': user_id, 'movieId': movie_id, 'rating': predicted_rating}, ignore_index=True)
+            # update the predicted_ratings dataframe with the predicted rating
+            # Create a new dataframe with the predicted rating
+            d = {'userId': user_id, 'movieId': movie_id,
+                 'rating': predicted_rating}
+            S1 = pd.Series(data=d)
+            predicted_ratings = pd.concat(
+                [predicted_ratings, S1.to_frame().T], ignore_index=True)
 
         else:
             # update the predicted_ratings dataframe with NaN value as rating
-            predicted_ratings = predicted_ratings.append({'userId': user_id, 'movieId': movie_id, 'rating': np.nan},
-                                                         ignore_index=True)
+            # Create a new dataframe with the predicted rating
+            d = {'userId': user_id, 'movieId': movie_id, 'rating': np.nan}
+            S1 = pd.Series(data=d)
+            predicted_ratings = pd.concat(
+                [predicted_ratings, S1.to_frame().T], ignore_index=True)
 
     # End Phase S2
 
@@ -325,7 +359,8 @@ if __name__ == '__main__':
     test_data = test_data.reset_index(drop=True)
 
     # drop the rows whose index is not in the predicted_ratings dataframe
-    test_data = test_data.drop(test_data[test_data.index.isin(predicted_ratings.index) == False].index)
+    test_data = test_data.drop(
+        test_data[test_data.index.isin(predicted_ratings.index) == False].index)
 
     # Calculate the Mean Absolute Error
     mae = mean_absolute_error(test_data['rating'], predicted_ratings['rating'])
@@ -333,10 +368,12 @@ if __name__ == '__main__':
 
     # Calculate the Recall and Precision
     # If the predicted rating is greater than 3.5, then it is a positive prediction
-    predicted_ratings['positivity'] = predicted_ratings['rating'].apply(lambda x: 1 if x > 3.5 else 0)
+    predicted_ratings['positivity'] = predicted_ratings['rating'].apply(
+        lambda x: 1 if x > 3.5 else 0)
 
     # On the test data, if the rating is greater than 3.5, then it is a positive prediction
-    test_data['positivity'] = test_data['rating'].apply(lambda x: 1 if x > 3.5 else 0)
+    test_data['positivity'] = test_data['rating'].apply(
+        lambda x: 1 if x > 3.5 else 0)
 
     # Create a dataframe to store the two positivity columns
     positivity = pd.DataFrame(columns=['predicted', 'actual'])
@@ -344,10 +381,14 @@ if __name__ == '__main__':
     positivity['actual'] = test_data['positivity']
 
     # Count the true positives, true negatives, false positives and false negatives
-    true_positives = positivity[(positivity['actual'] == 1) & (positivity['predicted'] == 1)].shape[0]
-    true_negatives = positivity[(positivity['actual'] == 0) & (positivity['predicted'] == 0)].shape[0]
-    false_positives = positivity[(positivity['actual'] == 0) & (positivity['predicted'] == 1)].shape[0]
-    false_negatives = positivity[(positivity['actual'] == 1) & (positivity['predicted'] == 0)].shape[0]
+    true_positives = positivity[(positivity['actual'] == 1) & (
+        positivity['predicted'] == 1)].shape[0]
+    true_negatives = positivity[(positivity['actual'] == 0) & (
+        positivity['predicted'] == 0)].shape[0]
+    false_positives = positivity[(positivity['actual'] == 0) & (
+        positivity['predicted'] == 1)].shape[0]
+    false_negatives = positivity[(positivity['actual'] == 1) & (
+        positivity['predicted'] == 0)].shape[0]
 
     # Calculate the Recall
     recall = true_positives / (true_positives + false_negatives)
@@ -357,5 +398,5 @@ if __name__ == '__main__':
     precision = true_positives / (true_positives + false_positives)
     print('Precision: ', precision)
 
-    print("######End of the program######")
+    print("###### End of the program ######")
 # end of the program
