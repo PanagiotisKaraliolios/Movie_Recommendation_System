@@ -141,16 +141,21 @@ def download_file(url: str, output_path: Path) -> None:
 
 
 def get_dataset_path(dataset_key: str) -> Path:
-    """Get the path to a dataset's ratings file."""
+    """Get the path to a dataset's ratings file (always CSV)."""
     if dataset_key == 'local':
         return Path('ratings.csv')
     
     config = DATASETS[dataset_key]
-    return DATA_DIR / config['extract_dir'] / config['ratings_file']
+    base_path = DATA_DIR / config['extract_dir'] / config['ratings_file']
+    
+    # For .dat format datasets, we use the converted .csv file
+    if config['format'] == 'dat':
+        return base_path.with_suffix('.csv')
+    return base_path
 
 
 def is_dataset_available(dataset_key: str) -> bool:
-    """Check if a dataset is already downloaded."""
+    """Check if a dataset is already downloaded and converted."""
     if dataset_key == 'local':
         return Path('ratings.csv').exists()
     return get_dataset_path(dataset_key).exists()
@@ -164,7 +169,7 @@ def download_dataset(dataset_key: str) -> Path:
         dataset_key: Key from DATASETS dict (e.g., '100k', '1m', '10m', '25m')
         
     Returns:
-        Path to the ratings file.
+        Path to the ratings CSV file.
     """
     if dataset_key == 'local':
         path = Path('ratings.csv')
@@ -173,12 +178,12 @@ def download_dataset(dataset_key: str) -> Path:
         return path
     
     config = DATASETS[dataset_key]
-    ratings_path = get_dataset_path(dataset_key)
+    csv_path = get_dataset_path(dataset_key)  # Always returns CSV path
     
-    # Check if already downloaded
-    if ratings_path.exists():
-        print(f"  Dataset already available: {ratings_path}")
-        return ratings_path
+    # Check if already downloaded and converted
+    if csv_path.exists():
+        print(f"  Dataset already available: {csv_path}")
+        return csv_path
     
     # Create data directory
     DATA_DIR.mkdir(exist_ok=True)
@@ -200,13 +205,11 @@ def download_dataset(dataset_key: str) -> Path:
     
     # Convert .dat format to CSV if needed
     if config['format'] == 'dat':
-        dat_path = ratings_path
-        csv_path = ratings_path.with_suffix('.csv')
+        dat_path = DATA_DIR / config['extract_dir'] / config['ratings_file']
         print(f"  Converting {dat_path.name} to CSV format...")
         convert_dat_to_csv(dat_path, csv_path)
-        return csv_path
     
-    return ratings_path
+    return csv_path
 
 
 def convert_dat_to_csv(dat_path: Path, csv_path: Path) -> None:
