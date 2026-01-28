@@ -1061,7 +1061,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def get_interactive_params() -> tuple[int, float, int]:
+def get_interactive_params() -> tuple[int, float, int, int]:
     """Get parameters interactively from user input."""
     while True:
         try:
@@ -1090,7 +1090,21 @@ def get_interactive_params() -> tuple[int, float, int]:
         except ValueError:
             print('Please enter a valid integer')
     
-    return k, train_ratio, model
+    max_workers = os.cpu_count() or 4
+    while True:
+        try:
+            workers = input(f'Number of workers (1-{max_workers}, default={DEFAULT_WORKERS}): ').strip()
+            if workers == '':
+                workers = DEFAULT_WORKERS
+                break
+            workers = int(workers)
+            if 1 <= workers <= max_workers:
+                break
+            print(f'Workers must be between 1 and {max_workers}')
+        except ValueError:
+            print('Please enter a valid integer')
+    
+    return k, train_ratio, model, workers
 
 
 # =============================================================================
@@ -1105,12 +1119,13 @@ def main() -> None:
     if args.interactive:
         # Interactive mode: show dataset menu first
         data_file = prepare_dataset(dataset_key=None, file_path=args.file)
-        k, train_ratio, model_choice = get_interactive_params()
+        k, train_ratio, model_choice, n_workers = get_interactive_params()
     else:
         # CLI mode
         k = args.neighbors
         train_ratio = min(args.train_ratio, MAX_TRAIN_RATIO)
         model_choice = args.model
+        n_workers = max(1, args.workers)
         
         # Determine dataset
         if args.file:
@@ -1120,8 +1135,6 @@ def main() -> None:
         else:
             # Default: interactive dataset selection
             data_file = prepare_dataset(dataset_key=None)
-    
-    n_workers = max(1, args.workers)
     
     print(f"\nConfiguration:")
     print(f"  K neighbors: {k}")
