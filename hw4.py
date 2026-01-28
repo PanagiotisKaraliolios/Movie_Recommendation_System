@@ -11,7 +11,10 @@ Uses the MovieLens dataset and evaluates predictions via MAE, Precision, and Rec
 from __future__ import annotations
 
 import argparse
+import multiprocessing as mp
+import os
 from dataclasses import dataclass
+from functools import partial
 from typing import Literal
 
 import numpy as np
@@ -20,6 +23,42 @@ from scipy.sparse import csr_matrix
 from sklearn.metrics import mean_absolute_error
 from sklearn.metrics.pairwise import cosine_similarity
 from tqdm.auto import tqdm
+
+# Default number of workers (use CPU count - 1, minimum 1)
+DEFAULT_WORKERS = max(1, (os.cpu_count() or 4) - 1)
+
+# Global variables for multiprocessing workers (initialized once per process)
+_worker_data: dict = {}
+
+
+def _init_s1_worker(
+    user_to_ratings: dict,
+    movie_similarity: np.ndarray,
+    movie_to_idx: dict,
+    idx_to_movie: dict,
+    k: int
+) -> None:
+    """Initialize global data for S1 workers (called once per process)."""
+    _worker_data['user_to_ratings'] = user_to_ratings
+    _worker_data['movie_similarity'] = movie_similarity
+    _worker_data['movie_to_idx'] = movie_to_idx
+    _worker_data['idx_to_movie'] = idx_to_movie
+    _worker_data['k'] = k
+
+
+def _init_s2_worker(
+    movie_to_ratings: dict,
+    user_similarity: np.ndarray,
+    user_to_idx: dict,
+    idx_to_user: dict,
+    k: int
+) -> None:
+    """Initialize global data for S2 workers (called once per process)."""
+    _worker_data['movie_to_ratings'] = movie_to_ratings
+    _worker_data['user_similarity'] = user_similarity
+    _worker_data['user_to_idx'] = user_to_idx
+    _worker_data['idx_to_user'] = idx_to_user
+    _worker_data['k'] = k
 
 
 # =============================================================================
@@ -46,6 +85,13 @@ class SimilarityMatrices:
     idx_to_movie: dict[int, str]
     user_to_idx: dict[str, int]
     idx_to_user: dict[int, str]
+
+
+@dataclass
+class TrainDataIndex:
+    """Pre-indexed training data for fast lookups."""
+    user_to_ratings: dict[str, pd.DataFrame]  # user_id -> their ratings
+    movie_to_ratings: dict[str, pd.DataFrame]  # movie_id -> ratings for that movie
 
 
 @dataclass
@@ -242,6 +288,22 @@ def build_similarity_matrices(
     )
 
 
+def build_train_data_index(train_data: pd.DataFrame) -> TrainDataIndex:
+    """
+    Pre-index training data for fast lookups during prediction.
+    
+    Args:
+        train_data: Training DataFrame.
+        
+    Returns:
+        TrainDataIndex with pre-grouped data.
+    """
+    print("Building training data index...")
+    user_to_ratings = {user: group for user, group in train_data.groupby('userId')}
+    movie_to_ratings = {movie: group for movie, group in train_data.groupby('movieId')}
+    return TrainDataIndex(user_to_ratings=user_to_ratings, movie_to_ratings=movie_to_ratings)
+
+
 # =============================================================================
 # Prediction Functions
 # =============================================================================
@@ -380,11 +442,146 @@ def predict_rating_user_based(
 # Two-Phase Prediction Pipeline
 # =============================================================================
 
+def _predict_item_based_worker(
+    row_data: tuple[str, str, float],
+    user_to_ratings: dict[str, pd.DataFrame] | None = None,
+    movie_similarity: np.ndarray | None = None,
+    movie_to_idx: dict[str, int] | None = None,
+    idx_to_movie: dict[int, str] | None = None,
+    k: int | None = None
+) -> dict | None:
+    """Worker function for parallel item-based prediction."""
+    # Use global data if not provided (multiprocessing mode)
+    if user_to_ratings is None:
+        user_to_ratings = _worker_data['user_to_ratings']
+        movie_similarity = _worker_data['movie_similarity']
+        movie_to_idx = _worker_data['movie_to_idx']
+        idx_to_movie = _worker_data['idx_to_movie']
+        k = _worker_data['k']
+    
+    user_id, movie_id, actual_rating = row_data
+    
+    if movie_id not in movie_to_idx:
+        return None
+    
+    movie_idx = movie_to_idx[movie_id]
+    
+    # Use pre-indexed lookup instead of DataFrame filtering
+    if user_id not in user_to_ratings:
+        return None
+    user_ratings = user_to_ratings[user_id]
+    
+    if user_ratings.empty:
+        return None
+    
+    rated_movie_ids = user_ratings['movieId'].values
+    rated_movie_indices = [movie_to_idx[m] for m in rated_movie_ids if m in movie_to_idx]
+    
+    if not rated_movie_indices:
+        return None
+    
+    sims = movie_similarity[movie_idx, rated_movie_indices]
+    ratings = user_ratings[user_ratings['movieId'].isin(
+        [idx_to_movie[i] for i in rated_movie_indices]
+    )]['rating'].values
+    
+    positive_mask = sims > 0
+    if not positive_mask.any():
+        return None
+    
+    sims = sims[positive_mask]
+    ratings = ratings[positive_mask]
+    
+    if len(sims) > k:
+        top_k_indices = np.argsort(sims)[-k:]
+        sims = sims[top_k_indices]
+        ratings = ratings[top_k_indices]
+    
+    pred = float(np.dot(ratings, sims) / sims.sum())
+    
+    # Return result only if passes S1 threshold
+    if pred >= S1_RATING_THRESHOLD:
+        return {
+            'userId': user_id,
+            'movieId': movie_id,
+            'actual_rating': actual_rating,
+            's1_prediction': pred
+        }
+    return None
+
+
+def _predict_user_based_worker(
+    row_data: tuple[str, str, float],
+    movie_to_ratings: dict[str, pd.DataFrame] | None = None,
+    user_similarity: np.ndarray | None = None,
+    user_to_idx: dict[str, int] | None = None,
+    idx_to_user: dict[int, str] | None = None,
+    k: int | None = None
+) -> dict | None:
+    """Worker function for parallel user-based prediction."""
+    # Use global data if not provided (multiprocessing mode)
+    if movie_to_ratings is None:
+        movie_to_ratings = _worker_data['movie_to_ratings']
+        user_similarity = _worker_data['user_similarity']
+        user_to_idx = _worker_data['user_to_idx']
+        idx_to_user = _worker_data['idx_to_user']
+        k = _worker_data['k']
+    
+    user_id, movie_id, actual_rating = row_data
+    
+    if user_id not in user_to_idx:
+        return None
+    
+    user_idx = user_to_idx[user_id]
+    
+    # Use pre-indexed lookup instead of DataFrame filtering
+    if movie_id not in movie_to_ratings:
+        return None
+    movie_ratings = movie_to_ratings[movie_id]
+    
+    if movie_ratings.empty:
+        return None
+    
+    rater_ids = movie_ratings['userId'].values
+    rater_indices = [user_to_idx[u] for u in rater_ids if u in user_to_idx]
+    
+    if not rater_indices:
+        return None
+    
+    sims = user_similarity[user_idx, rater_indices]
+    ratings = movie_ratings[movie_ratings['userId'].isin(
+        [idx_to_user[i] for i in rater_indices]
+    )]['rating'].values
+    
+    positive_mask = sims > 0
+    if not positive_mask.any():
+        return None
+    
+    sims = sims[positive_mask]
+    ratings = ratings[positive_mask]
+    
+    if len(sims) > k:
+        top_k_indices = np.argsort(sims)[-k:]
+        sims = sims[top_k_indices]
+        ratings = ratings[top_k_indices]
+    
+    pred = float(np.dot(ratings, sims) / sims.sum())
+    
+    return {
+        'userId': user_id,
+        'movieId': movie_id,
+        'actual_rating': actual_rating,
+        'predicted_rating': pred
+    }
+
+
 def run_two_phase_prediction(
     test_data: pd.DataFrame,
     train_data: pd.DataFrame,
     similarities: SimilarityMatrices,
-    k: int
+    train_index: TrainDataIndex,
+    k: int,
+    n_workers: int = 1
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Run the two-phase prediction pipeline.
@@ -396,48 +593,134 @@ def run_two_phase_prediction(
         test_data: Test DataFrame.
         train_data: Training DataFrame.
         similarities: Precomputed similarity matrices.
+        train_index: Pre-indexed training data for fast lookups.
         k: Number of neighbors.
+        n_workers: Number of parallel workers (1 = single-threaded).
         
     Returns:
         Tuple of (filtered_test_data, predictions_dataframe).
     """
-    # Phase S1: Item-based filtering
-    print("\nPhase S1: Item-based filtering...")
-    s1_results = []
+    # Prepare data as list of tuples for workers
+    test_rows = list(zip(
+        test_data['userId'].values,
+        test_data['movieId'].values,
+        test_data['rating'].values
+    ))
     
-    for _, row in tqdm(test_data.iterrows(), total=len(test_data), desc='Phase S1'):
-        user_id, movie_id, actual_rating = row['userId'], row['movieId'], row['rating']
-        
-        pred = predict_rating_item_based(user_id, movie_id, train_data, similarities, k)
-        
-        # Keep if prediction >= threshold or if we couldn't predict (let S2 handle it)
-        if pred is None or pred >= S1_RATING_THRESHOLD:
-            s1_results.append({
-                'userId': user_id,
-                'movieId': movie_id,
-                'actual_rating': actual_rating,
-                's1_prediction': pred
-            })
+    # Phase S1: Item-based filtering
+    print(f"\nPhase S1: Item-based filtering... (workers: {n_workers})")
+    
+    if n_workers > 1:
+        # Use initializer to share data across workers (avoids pickling per task)
+        with mp.Pool(
+            n_workers,
+            initializer=_init_s1_worker,
+            initargs=(
+                train_index.user_to_ratings,
+                similarities.movie_similarity,
+                similarities.movie_to_idx,
+                similarities.idx_to_movie,
+                k
+            )
+        ) as pool:
+            s1_results = list(tqdm(
+                pool.imap(_predict_item_based_worker, test_rows, chunksize=500),
+                total=len(test_rows),
+                desc='Phase S1'
+            ))
+    else:
+        # Single-threaded fallback
+        s1_results = []
+        for row in tqdm(test_rows, desc='Phase S1'):
+            result = _predict_item_based_worker(
+                row, 
+                train_index.user_to_ratings,
+                similarities.movie_similarity,
+                similarities.movie_to_idx,
+                similarities.idx_to_movie,
+                k
+            )
+            # Also include items we couldn't predict (let S2 handle them)
+            if result is None:
+                user_id, movie_id, actual_rating = row
+                if movie_id in similarities.movie_to_idx:
+                    result = {
+                        'userId': user_id,
+                        'movieId': movie_id,
+                        'actual_rating': actual_rating,
+                        's1_prediction': None
+                    }
+            s1_results.append(result)
+    
+    # Filter None results and handle unpredicted items for parallel case
+    if n_workers > 1:
+        filtered_results = []
+        for i, result in enumerate(s1_results):
+            if result is not None:
+                filtered_results.append(result)
+            else:
+                # Check if movie exists - if so, let S2 try
+                user_id, movie_id, actual_rating = test_rows[i]
+                if movie_id in similarities.movie_to_idx:
+                    # Item-based couldn't predict, but movie exists - let S2 try
+                    filtered_results.append({
+                        'userId': user_id,
+                        'movieId': movie_id,
+                        'actual_rating': actual_rating,
+                        's1_prediction': None
+                    })
+        s1_results = filtered_results
+    else:
+        s1_results = [r for r in s1_results if r is not None]
     
     s1_df = pd.DataFrame(s1_results)
     print(f"  Kept {len(s1_df)} / {len(test_data)} entries after S1 filtering")
     
-    # Phase S2: User-based prediction
-    print("\nPhase S2: User-based prediction...")
-    predictions = []
+    if s1_df.empty:
+        return s1_df, pd.DataFrame()
     
-    for _, row in tqdm(s1_df.iterrows(), total=len(s1_df), desc='Phase S2'):
-        user_id, movie_id, actual_rating = row['userId'], row['movieId'], row['actual_rating']
-        
-        pred = predict_rating_user_based(user_id, movie_id, train_data, similarities, k)
-        
-        if pred is not None:
-            predictions.append({
-                'userId': user_id,
-                'movieId': movie_id,
-                'actual_rating': actual_rating,
-                'predicted_rating': pred
-            })
+    # Phase S2: User-based prediction
+    print(f"\nPhase S2: User-based prediction... (workers: {n_workers})")
+    
+    s2_rows = list(zip(
+        s1_df['userId'].values,
+        s1_df['movieId'].values,
+        s1_df['actual_rating'].values
+    ))
+    
+    if n_workers > 1:
+        # Use initializer to share data across workers (avoids pickling per task)
+        with mp.Pool(
+            n_workers,
+            initializer=_init_s2_worker,
+            initargs=(
+                train_index.movie_to_ratings,
+                similarities.user_similarity,
+                similarities.user_to_idx,
+                similarities.idx_to_user,
+                k
+            )
+        ) as pool:
+            predictions = list(tqdm(
+                pool.imap(_predict_user_based_worker, s2_rows, chunksize=500),
+                total=len(s2_rows),
+                desc='Phase S2'
+            ))
+    else:
+        predictions = []
+        for row in tqdm(s2_rows, desc='Phase S2'):
+            result = _predict_user_based_worker(
+                row, 
+                train_index.movie_to_ratings,
+                similarities.user_similarity,
+                similarities.user_to_idx,
+                similarities.idx_to_user,
+                k
+            )
+            predictions.append(result)
+    
+    # Filter None results
+    predictions = [p for p in predictions if p is not None]
     
     predictions_df = pd.DataFrame(predictions)
     print(f"  Generated {len(predictions_df)} predictions")
@@ -557,6 +840,12 @@ def parse_args() -> argparse.Namespace:
         help='Random seed for reproducibility'
     )
     parser.add_argument(
+        '-w', '--workers',
+        type=int,
+        default=DEFAULT_WORKERS,
+        help=f'Number of parallel workers (default: {DEFAULT_WORKERS})'
+    )
+    parser.add_argument(
         '-i', '--interactive',
         action='store_true',
         help='Run in interactive mode (prompts for parameters)'
@@ -613,11 +902,14 @@ def main() -> None:
         train_ratio = min(args.train_ratio, MAX_TRAIN_RATIO)
         model_choice = args.model
     
+    n_workers = max(1, args.workers)
+    
     print(f"\nConfiguration:")
     print(f"  K neighbors: {k}")
     print(f"  Train ratio: {train_ratio}")
     print(f"  Model: {model_choice} ({'Jaccard+Cosine' if model_choice == 1 else 'Cosine+Cosine'})")
     print(f"  Data file: {args.file}")
+    print(f"  Workers: {n_workers}")
     
     # Load and preprocess data
     print("\nLoading data...")
@@ -639,9 +931,12 @@ def main() -> None:
     # Build similarity matrices
     similarities = build_similarity_matrices(train_data, model_choice)
     
+    # Build training data index for fast lookups
+    train_index = build_train_data_index(train_data)
+    
     # Run prediction pipeline
     _, predictions_df = run_two_phase_prediction(
-        test_data, train_data, similarities, k
+        test_data, train_data, similarities, train_index, k, n_workers
     )
     
     # Evaluate
