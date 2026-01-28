@@ -42,8 +42,8 @@ Available datasets:
 |---------|------|--------------|
 | `100k` | ~100K ratings | ~1GB |
 | `1m` | ~1M ratings | ~2GB |
-| `10m` | ~10M ratings | ~8GB |
-| `25m` | ~25M ratings | ~32GB |
+| `10m` | ~10M ratings | ~40GB |
+| `25m` | ~25M ratings | ~200GB |
 | `local` | Use ratings.csv | varies |
 
 ### Full Examples

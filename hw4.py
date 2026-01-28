@@ -84,7 +84,7 @@ DATASETS = {
         'extract_dir': 'ml-latest-small',
         'ratings_file': 'ratings.csv',
         'format': 'csv',  # Standard CSV with header
-        'size': '~100K ratings',
+        'size': '~100K ratings, ~1GB RAM',
     },
     '1m': {
         'name': 'MovieLens 1M',
@@ -93,7 +93,7 @@ DATASETS = {
         'extract_dir': 'ml-1m',
         'ratings_file': 'ratings.dat',
         'format': 'dat',  # :: delimited
-        'size': '~1M ratings',
+        'size': '~1M ratings, ~2GB RAM',
     },
     '10m': {
         'name': 'MovieLens 10M',
@@ -102,7 +102,7 @@ DATASETS = {
         'extract_dir': 'ml-10M100K',
         'ratings_file': 'ratings.dat',
         'format': 'dat',  # :: delimited
-        'size': '~10M ratings (requires ~8GB RAM)',
+        'size': '~10M ratings, ~40GB RAM',
     },
     '25m': {
         'name': 'MovieLens 25M',
@@ -111,7 +111,7 @@ DATASETS = {
         'extract_dir': 'ml-25m',
         'ratings_file': 'ratings.csv',
         'format': 'csv',
-        'size': '~25M ratings (requires ~32GB RAM)',
+        'size': '~25M ratings, ~200GB RAM',
     },
     'local': {
         'name': 'Local file (ratings.csv)',
