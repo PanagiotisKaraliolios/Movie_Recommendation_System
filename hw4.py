@@ -13,8 +13,12 @@ from __future__ import annotations
 import argparse
 import multiprocessing as mp
 import os
+import shutil
+import urllib.request
+import zipfile
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from typing import Literal
 
 import numpy as np
@@ -70,6 +74,199 @@ TEST_SPLIT_RATIO = 0.1
 MAX_TRAIN_RATIO = 0.9
 S1_RATING_THRESHOLD = 2.5
 POSITIVE_RATING_THRESHOLD = 3.5
+
+# Dataset configurations
+DATASETS = {
+    '100k': {
+        'name': 'MovieLens 100K',
+        'url': 'https://files.grouplens.org/datasets/movielens/ml-latest-small.zip',
+        'zip_name': 'ml-latest-small.zip',
+        'extract_dir': 'ml-latest-small',
+        'ratings_file': 'ratings.csv',
+        'format': 'csv',  # Standard CSV with header
+        'size': '~100K ratings',
+    },
+    '1m': {
+        'name': 'MovieLens 1M',
+        'url': 'https://files.grouplens.org/datasets/movielens/ml-1m.zip',
+        'zip_name': 'ml-1m.zip',
+        'extract_dir': 'ml-1m',
+        'ratings_file': 'ratings.dat',
+        'format': 'dat',  # :: delimited
+        'size': '~1M ratings',
+    },
+    '10m': {
+        'name': 'MovieLens 10M',
+        'url': 'https://files.grouplens.org/datasets/movielens/ml-10m.zip',
+        'zip_name': 'ml-10m.zip',
+        'extract_dir': 'ml-10M100K',
+        'ratings_file': 'ratings.dat',
+        'format': 'dat',  # :: delimited
+        'size': '~10M ratings (requires ~8GB RAM)',
+    },
+    '25m': {
+        'name': 'MovieLens 25M',
+        'url': 'https://files.grouplens.org/datasets/movielens/ml-25m.zip',
+        'zip_name': 'ml-25m.zip',
+        'extract_dir': 'ml-25m',
+        'ratings_file': 'ratings.csv',
+        'format': 'csv',
+        'size': '~25M ratings (requires ~32GB RAM)',
+    },
+    'local': {
+        'name': 'Local file (ratings.csv)',
+        'size': 'Use existing local file',
+    },
+}
+
+DATA_DIR = Path('data')
+
+
+# =============================================================================
+# Dataset Download and Management
+# =============================================================================
+
+class DownloadProgressBar(tqdm):
+    """Progress bar for urllib downloads."""
+    def update_to(self, b: int = 1, bsize: int = 1, tsize: int | None = None) -> None:
+        if tsize is not None:
+            self.total = tsize
+        self.update(b * bsize - self.n)
+
+
+def download_file(url: str, output_path: Path) -> None:
+    """Download a file with progress bar."""
+    with DownloadProgressBar(unit='B', unit_scale=True, miniters=1, desc=output_path.name) as t:
+        urllib.request.urlretrieve(url, output_path, reporthook=t.update_to)
+
+
+def get_dataset_path(dataset_key: str) -> Path:
+    """Get the path to a dataset's ratings file."""
+    if dataset_key == 'local':
+        return Path('ratings.csv')
+    
+    config = DATASETS[dataset_key]
+    return DATA_DIR / config['extract_dir'] / config['ratings_file']
+
+
+def is_dataset_available(dataset_key: str) -> bool:
+    """Check if a dataset is already downloaded."""
+    if dataset_key == 'local':
+        return Path('ratings.csv').exists()
+    return get_dataset_path(dataset_key).exists()
+
+
+def download_dataset(dataset_key: str) -> Path:
+    """
+    Download and extract a MovieLens dataset if not already present.
+    
+    Args:
+        dataset_key: Key from DATASETS dict (e.g., '100k', '1m', '10m', '25m')
+        
+    Returns:
+        Path to the ratings file.
+    """
+    if dataset_key == 'local':
+        path = Path('ratings.csv')
+        if not path.exists():
+            raise FileNotFoundError("Local ratings.csv not found")
+        return path
+    
+    config = DATASETS[dataset_key]
+    ratings_path = get_dataset_path(dataset_key)
+    
+    # Check if already downloaded
+    if ratings_path.exists():
+        print(f"  Dataset already available: {ratings_path}")
+        return ratings_path
+    
+    # Create data directory
+    DATA_DIR.mkdir(exist_ok=True)
+    
+    zip_path = DATA_DIR / config['zip_name']
+    
+    # Download if zip doesn't exist
+    if not zip_path.exists():
+        print(f"  Downloading {config['name']}...")
+        download_file(config['url'], zip_path)
+    
+    # Extract
+    print(f"  Extracting {zip_path.name}...")
+    with zipfile.ZipFile(zip_path, 'r') as zf:
+        zf.extractall(DATA_DIR)
+    
+    # Clean up zip file
+    zip_path.unlink()
+    
+    # Convert .dat format to CSV if needed
+    if config['format'] == 'dat':
+        dat_path = ratings_path
+        csv_path = ratings_path.with_suffix('.csv')
+        print(f"  Converting {dat_path.name} to CSV format...")
+        convert_dat_to_csv(dat_path, csv_path)
+        return csv_path
+    
+    return ratings_path
+
+
+def convert_dat_to_csv(dat_path: Path, csv_path: Path) -> None:
+    """Convert MovieLens .dat format (:: delimiter) to CSV."""
+    # Read with :: delimiter, no header
+    df = pd.read_csv(
+        dat_path, 
+        sep='::', 
+        engine='python',
+        names=['userId', 'movieId', 'rating', 'timestamp'],
+        dtype={'userId': str, 'movieId': str, 'rating': float}
+    )
+    # Save as CSV
+    df.to_csv(csv_path, index=False)
+
+
+def select_dataset_interactive() -> str:
+    """Interactive dataset selection menu."""
+    print("\n" + "=" * 50)
+    print("DATASET SELECTION")
+    print("=" * 50)
+    
+    keys = list(DATASETS.keys())
+    for i, key in enumerate(keys, 1):
+        config = DATASETS[key]
+        status = "✓ available" if is_dataset_available(key) else "↓ will download"
+        print(f"  {i}. {config['name']:25} ({config['size']}) [{status}]")
+    
+    while True:
+        try:
+            choice = input(f"\nSelect dataset (1-{len(keys)}): ").strip()
+            idx = int(choice) - 1
+            if 0 <= idx < len(keys):
+                return keys[idx]
+            print(f"Please enter a number between 1 and {len(keys)}")
+        except ValueError:
+            print("Please enter a valid number")
+
+
+def prepare_dataset(dataset_key: str | None = None, file_path: str | None = None) -> Path:
+    """
+    Prepare the dataset for use, downloading if necessary.
+    
+    Args:
+        dataset_key: Key from DATASETS dict, or None for interactive selection
+        file_path: Direct path to ratings file (overrides dataset_key)
+        
+    Returns:
+        Path to the ratings file ready for use.
+    """
+    # If direct file path provided, use it
+    if file_path and Path(file_path).exists():
+        return Path(file_path)
+    
+    # Interactive selection if no dataset specified
+    if dataset_key is None:
+        dataset_key = select_dataset_interactive()
+    
+    print(f"\nPreparing dataset: {DATASETS[dataset_key]['name']}")
+    return download_dataset(dataset_key)
 
 
 # =============================================================================
@@ -809,6 +1006,13 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
+        '-d', '--dataset',
+        type=str,
+        choices=list(DATASETS.keys()),
+        default=None,
+        help='Dataset to use (will download if not present)'
+    )
+    parser.add_argument(
         '-k', '--neighbors',
         type=int,
         default=10,
@@ -830,8 +1034,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '-f', '--file',
         type=str,
-        default='ratings.csv',
-        help='Path to ratings CSV file'
+        default=None,
+        help='Direct path to ratings CSV file (overrides -d/--dataset)'
     )
     parser.add_argument(
         '-s', '--seed',
@@ -894,13 +1098,25 @@ def main() -> None:
     """Main entry point for the recommendation system."""
     args = parse_args()
     
-    # Get parameters
+    # Dataset selection / preparation
     if args.interactive:
+        # Interactive mode: show dataset menu first
+        data_file = prepare_dataset(dataset_key=None, file_path=args.file)
         k, train_ratio, model_choice = get_interactive_params()
     else:
+        # CLI mode
         k = args.neighbors
         train_ratio = min(args.train_ratio, MAX_TRAIN_RATIO)
         model_choice = args.model
+        
+        # Determine dataset
+        if args.file:
+            data_file = prepare_dataset(file_path=args.file)
+        elif args.dataset:
+            data_file = prepare_dataset(dataset_key=args.dataset)
+        else:
+            # Default: interactive dataset selection
+            data_file = prepare_dataset(dataset_key=None)
     
     n_workers = max(1, args.workers)
     
@@ -908,12 +1124,12 @@ def main() -> None:
     print(f"  K neighbors: {k}")
     print(f"  Train ratio: {train_ratio}")
     print(f"  Model: {model_choice} ({'Jaccard+Cosine' if model_choice == 1 else 'Cosine+Cosine'})")
-    print(f"  Data file: {args.file}")
+    print(f"  Data file: {data_file}")
     print(f"  Workers: {n_workers}")
     
     # Load and preprocess data
     print("\nLoading data...")
-    ratings = read_ratings(args.file)
+    ratings = read_ratings(str(data_file))
     print(f"  Loaded {len(ratings)} ratings")
     
     ratings = filter_sparse_movies(ratings)

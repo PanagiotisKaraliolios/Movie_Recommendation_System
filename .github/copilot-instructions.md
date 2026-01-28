@@ -6,21 +6,25 @@
 - **Phase S1 (Item-based)**: Filters candidates using movie-movie similarity (threshold: 2.5)
 - **Phase S2 (User-based)**: Predicts final ratings using user-user similarity
 
-Supports MovieLens datasets (100K to 1M+ ratings) with multiprocessing acceleration.
+Supports MovieLens datasets (100K to 25M ratings) with **automatic download** and multiprocessing acceleration.
 
 ## Architecture
 
 ### Data Flow
 ```
-ratings.csv → read_ratings() → filter_sparse_movies() → train_test_split()
-           → build_similarity_matrices() → build_train_data_index()
-           → run_two_phase_prediction() → evaluate_predictions()
+select_dataset() → download_dataset() → convert_dat_to_csv()
+    → read_ratings() → filter_sparse_movies() → train_test_split()
+    → build_similarity_matrices() → build_train_data_index()
+    → run_two_phase_prediction() → evaluate_predictions()
 ```
 
 ### Key Components in `hw4.py`
 
 | Component | Purpose |
 |-----------|---------|
+| `DATASETS` | Dict with dataset configs (URLs, formats, sizes) |
+| `download_dataset()` | Downloads and extracts MovieLens datasets |
+| `convert_dat_to_csv()` | Converts .dat format (:: delimiter) to CSV |
 | `SimilarityMatrices` | Dataclass holding precomputed numpy arrays + index mappings |
 | `TrainDataIndex` | Pre-indexed training data for O(1) lookups (grouped by user/movie) |
 | `EvaluationMetrics` | Dataclass for MAE, precision, recall, confusion matrix |
@@ -34,31 +38,33 @@ ratings.csv → read_ratings() → filter_sparse_movies() → train_test_split()
 MIN_RATINGS_PER_MOVIE = 5      # Filter sparse movies
 S1_RATING_THRESHOLD = 2.5      # Phase S1 filtering cutoff
 POSITIVE_RATING_THRESHOLD = 3.5 # Binary classification threshold
+DATA_DIR = Path('data')        # Downloaded datasets directory
 ```
 
 ## Running the System
 
 ```bash
-# Single-threaded (default)
-python hw4.py -k 10 -t 0.8 -m 1
+# Download and use MovieLens 1M
+python hw4.py -d 1m -w 8
 
-# Multi-threaded (8 workers)
-python hw4.py -k 10 -t 0.8 -m 1 -w 8
+# Use local ratings.csv
+python hw4.py -d local -k 10 -t 0.8 -m 1
+
+# Interactive mode (dataset selection menu)
+python hw4.py -i
 
 # With reproducible results
-python hw4.py -k 10 -t 0.8 -m 1 -s 42 -w 8
-
-# Interactive mode
-python hw4.py -i
+python hw4.py -d 1m -k 10 -t 0.8 -m 1 -s 42 -w 8
 ```
 
 **CLI Arguments:**
+- `-d/--dataset`: Dataset choice (100k, 1m, 10m, 25m, local)
 - `-k/--neighbors`: K value for KNN (default: 10)
 - `-t/--train-ratio`: Training ratio 0-0.9 (default: 0.8)
 - `-m/--model`: 1=Jaccard+Cosine, 2=Cosine+Cosine
-- `-w/--workers`: Number of parallel workers (default: 1)
+- `-w/--workers`: Number of parallel workers (default: CPU-1)
 - `-s/--seed`: Random seed for reproducibility
-- `-f/--file`: Path to ratings CSV
+- `-f/--file`: Direct path to ratings CSV (overrides -d)
 
 ## Performance Benchmarks
 
